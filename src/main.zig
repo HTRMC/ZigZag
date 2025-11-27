@@ -5,6 +5,28 @@ const Field = enum {
     password,
 };
 
+fn clearScreen() void {
+    if (@import("builtin").os.tag == .windows) {
+        const win = std.os.windows;
+        const stdout_handle = std.fs.File.stdout().handle;
+
+        // Get console screen buffer info
+        var csbi: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        if (win.kernel32.GetConsoleScreenBufferInfo(stdout_handle, &csbi) != 0) {
+            const console_size: u32 = @intCast(csbi.dwSize.X * csbi.dwSize.Y);
+            var written: u32 = undefined;
+            const coord = win.COORD{ .X = 0, .Y = 0 };
+
+            // Fill console with spaces (use W version for Unicode)
+            _ = win.kernel32.FillConsoleOutputCharacterW(stdout_handle, ' ', console_size, coord, &written);
+            // Reset attributes
+            _ = win.kernel32.FillConsoleOutputAttribute(stdout_handle, csbi.wAttributes, console_size, coord, &written);
+            // Move cursor to top-left
+            _ = win.kernel32.SetConsoleCursorPosition(stdout_handle, coord);
+        }
+    }
+}
+
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
@@ -73,7 +95,8 @@ pub fn main() !void {
     }
 
     // Clear screen and hide cursor
-    try stdout.writeAll("\x1b[2J\x1b[H\x1b[?25l");
+    clearScreen();
+    try stdout.writeAll("\x1b[?25l");
     try stdout.flush();
 
     defer {
@@ -95,7 +118,7 @@ pub fn main() !void {
 
     while (!done) {
         // Clear and redraw UI
-        try stdout.writeAll("\x1b[2J\x1b[H");
+        clearScreen();
         try stdout.writeAll("╔════════════════════════════════════════╗\n");
         try stdout.writeAll("║          Login Form (ZigZag)           ║\n");
         try stdout.writeAll("╠════════════════════════════════════════╣\n");
@@ -141,7 +164,7 @@ pub fn main() !void {
         try stdout.writeAll("║                                        ║\n");
         try stdout.writeAll("╚════════════════════════════════════════╝\n");
         try stdout.writeAll("\n");
-        try stdout.writeAll("↑/↓: Navigate  │  Type: Edit  │  Enter: Submit  │  Esc: Exit\n");
+        try stdout.writeAll("↑/↓: Navigate  │  Type: Edit  │  Enter: Next/Submit  │  Esc: Exit\n");
         try stdout.flush();
 
         // Read input
@@ -170,8 +193,12 @@ pub fn main() !void {
                 current_field = .password;
             }
         } else if (byte == '\r' or byte == '\n') {
-            // Enter key - submit
-            done = true;
+            // Enter key - move to next field or submit
+            if (current_field == .username) {
+                current_field = .password;
+            } else {
+                done = true; // Submit when on password field
+            }
         } else if (byte == 127 or byte == 8) { // Backspace
             if (current_field == .username and username_len > 0) {
                 username_len -= 1;
@@ -191,7 +218,7 @@ pub fn main() !void {
     }
 
     // Clear screen and show results
-    try stdout.writeAll("\x1b[2J\x1b[H");
+    clearScreen();
     try stdout.writeAll("╔════════════════════════════════════════╗\n");
     try stdout.writeAll("║              Login Result              ║\n");
     try stdout.writeAll("╠════════════════════════════════════════╣\n");
