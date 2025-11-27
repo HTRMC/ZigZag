@@ -97,7 +97,7 @@ pub fn main() !void {
         // Clear and redraw UI
         try stdout.writeAll("\x1b[2J\x1b[H");
         try stdout.writeAll("╔════════════════════════════════════════╗\n");
-        try stdout.writeAll("║          Login Form (ZigZag)          ║\n");
+        try stdout.writeAll("║          Login Form (ZigZag)           ║\n");
         try stdout.writeAll("╠════════════════════════════════════════╣\n");
         try stdout.writeAll("║                                        ║\n");
 
@@ -107,9 +107,10 @@ pub fn main() !void {
         } else {
             try stdout.writeAll("║   Username: ");
         }
-        try stdout.writeAll(username_buffer[0..username_len]);
-        // Pad to align the box
-        const username_padding = 25 - username_len;
+        const display_username_len = @min(username_len, 25);
+        try stdout.writeAll(username_buffer[0..display_username_len]);
+        // Pad to align the box (27 = max_len + 2 for safety)
+        const username_padding = if (username_len < 27) 27 - username_len else 0;
         var i: usize = 0;
         while (i < username_padding) : (i += 1) {
             try stdout.writeAll(" ");
@@ -125,11 +126,12 @@ pub fn main() !void {
             try stdout.writeAll("║   Password: ");
         }
         // Show password as asterisks
+        const display_password_len = @min(password_len, 25);
         i = 0;
-        while (i < password_len) : (i += 1) {
+        while (i < display_password_len) : (i += 1) {
             try stdout.writeAll("*");
         }
-        const password_padding = 25 - password_len;
+        const password_padding = if (password_len < 27) 27 - password_len else 0;
         i = 0;
         while (i < password_padding) : (i += 1) {
             try stdout.writeAll(" ");
@@ -177,10 +179,11 @@ pub fn main() !void {
                 password_len -= 1;
             }
         } else if (byte >= 32 and byte <= 126) { // Printable characters
-            if (current_field == .username and username_len < username_buffer.len) {
+            const max_input_len = 25;
+            if (current_field == .username and username_len < max_input_len) {
                 username_buffer[username_len] = byte;
                 username_len += 1;
-            } else if (current_field == .password and password_len < password_buffer.len) {
+            } else if (current_field == .password and password_len < max_input_len) {
                 password_buffer[password_len] = byte;
                 password_len += 1;
             }
@@ -193,8 +196,27 @@ pub fn main() !void {
     try stdout.writeAll("║              Login Result              ║\n");
     try stdout.writeAll("╠════════════════════════════════════════╣\n");
     try stdout.writeAll("║                                        ║\n");
-    try stdout.print("║  Username: {s:<27}║\n", .{username_buffer[0..username_len]});
-    try stdout.print("║  Password: {s:<27}║\n", .{password_buffer[0..password_len]});
+
+    // Username result
+    try stdout.writeAll("║  Username: ");
+    try stdout.writeAll(username_buffer[0..username_len]);
+    const result_username_padding = if (username_len < 28) 28 - username_len else 0;
+    var result_i: usize = 0;
+    while (result_i < result_username_padding) : (result_i += 1) {
+        try stdout.writeAll(" ");
+    }
+    try stdout.writeAll("║\n");
+
+    // Password result
+    try stdout.writeAll("║  Password: ");
+    try stdout.writeAll(password_buffer[0..password_len]);
+    const result_password_padding = if (password_len < 28) 28 - password_len else 0;
+    result_i = 0;
+    while (result_i < result_password_padding) : (result_i += 1) {
+        try stdout.writeAll(" ");
+    }
+    try stdout.writeAll("║\n");
+
     try stdout.writeAll("║                                        ║\n");
     try stdout.writeAll("╚════════════════════════════════════════╝\n");
     try stdout.flush();
