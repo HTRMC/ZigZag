@@ -5,6 +5,55 @@ const Field = enum {
     password,
 };
 
+// Windows Ctrl+C handler setup
+const BOOL = i32;
+const WINAPI = std.builtin.CallingConvention.winapi;
+const PHANDLER_ROUTINE = ?*const fn (u32) callconv(WINAPI) BOOL;
+
+extern "kernel32" fn SetConsoleCtrlHandler(
+    HandlerRoutine: PHANDLER_ROUTINE,
+    Add: BOOL,
+) callconv(WINAPI) BOOL;
+
+extern "kernel32" fn WriteConsoleA(
+    hConsoleOutput: std.os.windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfCharsToWrite: u32,
+    lpNumberOfCharsWritten: *u32,
+    lpReserved: ?*anyopaque,
+) callconv(WINAPI) BOOL;
+
+// Global state for cleanup in signal handler
+var g_original_input_mode: u32 = undefined;
+var g_original_output_cp: u32 = undefined;
+var g_raw_mode_enabled: bool = false;
+var g_cleanup_needed: bool = false;
+
+fn ctrlHandler(dwCtrlType: u32) callconv(WINAPI) BOOL {
+    _ = dwCtrlType;
+
+    if (g_cleanup_needed) {
+        const win = std.os.windows;
+        const stdin_handle = std.fs.File.stdin().handle;
+        const stdout_handle = std.fs.File.stdout().handle;
+
+        // Restore code page
+        _ = win.kernel32.SetConsoleOutputCP(g_original_output_cp);
+
+        // Restore input mode
+        if (g_raw_mode_enabled) {
+            _ = win.kernel32.SetConsoleMode(stdin_handle, g_original_input_mode);
+        }
+
+        // Show cursor and clear screen
+        const cleanup_seq = "\x1b[?25h\x1b[2J\x1b[H";
+        var written: u32 = undefined;
+        _ = WriteConsoleA(stdout_handle, cleanup_seq.ptr, cleanup_seq.len, &written, null);
+    }
+
+    return 0; // Let default handler terminate the process
+}
+
 fn clearScreen() void {
     if (@import("builtin").os.tag == .windows) {
         const win = std.os.windows;
@@ -94,6 +143,13 @@ pub fn main() !void {
                 raw_mode_enabled = true;
             }
         }
+
+        // Register Ctrl+C handler
+        g_original_input_mode = original_input_mode;
+        g_original_output_cp = original_output_cp;
+        g_raw_mode_enabled = raw_mode_enabled;
+        _ = SetConsoleCtrlHandler(&ctrlHandler, 1);
+        g_cleanup_needed = true;
     }
 
     // Clear screen and hide cursor
