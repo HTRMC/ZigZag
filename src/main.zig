@@ -52,6 +52,8 @@ pub fn main() !void {
     var password_buffer: [256]u8 = undefined;
     var username_len: usize = 0;
     var password_len: usize = 0;
+    var username_cursor: usize = 0;
+    var password_cursor: usize = 0;
 
     var current_field: Field = .username;
     var done = false;
@@ -164,11 +166,26 @@ pub fn main() !void {
         try stdout.writeAll("║                                        ║\n");
         try stdout.writeAll("╚════════════════════════════════════════╝\n");
         try stdout.writeAll("\n");
-        try stdout.writeAll("↑/↓: Navigate  │  Type: Edit  │  Enter: Next/Submit  │  Esc: Exit\n");
+        try stdout.writeAll("↑/↓: Navigate  │  ←/→: Move cursor  │  Enter: Next/Submit  │  Esc: Exit\n");
+
+        // Position cursor at the correct location
+        if (current_field == .username) {
+            const cursor_col = 14 + username_cursor; // "║ ► Username: " = 14 chars
+            try stdout.print("\x1b[5;{d}H", .{cursor_col + 1}); // Row 5, column (1-indexed)
+        } else {
+            const cursor_col = 14 + password_cursor; // "║ ► Password: " = 14 chars
+            try stdout.print("\x1b[7;{d}H", .{cursor_col + 1}); // Row 7, column (1-indexed)
+        }
+        // Show cursor
+        try stdout.writeAll("\x1b[?25h");
         try stdout.flush();
 
         // Read input
         const byte = try stdin.takeByte();
+
+        // Hide cursor while processing
+        try stdout.writeAll("\x1b[?25l");
+        try stdout.flush();
 
         // Handle escape sequences (arrow keys) and Windows scan codes
         if (byte == 0x1B) { // ESC - ANSI escape sequence
@@ -183,6 +200,18 @@ pub fn main() !void {
                     current_field = .username;
                 } else if (arrow == 'B') { // Down arrow
                     current_field = .password;
+                } else if (arrow == 'D') { // Left arrow
+                    if (current_field == .username and username_cursor > 0) {
+                        username_cursor -= 1;
+                    } else if (current_field == .password and password_cursor > 0) {
+                        password_cursor -= 1;
+                    }
+                } else if (arrow == 'C') { // Right arrow
+                    if (current_field == .username and username_cursor < username_len) {
+                        username_cursor += 1;
+                    } else if (current_field == .password and password_cursor < password_len) {
+                        password_cursor += 1;
+                    }
                 }
             }
         } else if (byte == 0xE0 or byte == 0x00) { // Windows extended key scan code
@@ -191,6 +220,18 @@ pub fn main() !void {
                 current_field = .username;
             } else if (scan == 0x50) { // Down arrow
                 current_field = .password;
+            } else if (scan == 0x4B) { // Left arrow
+                if (current_field == .username and username_cursor > 0) {
+                    username_cursor -= 1;
+                } else if (current_field == .password and password_cursor > 0) {
+                    password_cursor -= 1;
+                }
+            } else if (scan == 0x4D) { // Right arrow
+                if (current_field == .username and username_cursor < username_len) {
+                    username_cursor += 1;
+                } else if (current_field == .password and password_cursor < password_len) {
+                    password_cursor += 1;
+                }
             }
         } else if (byte == '\r' or byte == '\n') {
             // Enter key - move to next field or submit
@@ -200,19 +241,41 @@ pub fn main() !void {
                 done = true; // Submit when on password field
             }
         } else if (byte == 127 or byte == 8) { // Backspace
-            if (current_field == .username and username_len > 0) {
+            if (current_field == .username and username_cursor > 0) {
+                // Shift characters left
+                var j: usize = username_cursor;
+                while (j < username_len) : (j += 1) {
+                    username_buffer[j - 1] = username_buffer[j];
+                }
                 username_len -= 1;
-            } else if (current_field == .password and password_len > 0) {
+                username_cursor -= 1;
+            } else if (current_field == .password and password_cursor > 0) {
+                var j: usize = password_cursor;
+                while (j < password_len) : (j += 1) {
+                    password_buffer[j - 1] = password_buffer[j];
+                }
                 password_len -= 1;
+                password_cursor -= 1;
             }
         } else if (byte >= 32 and byte <= 126) { // Printable characters
             const max_input_len = 25;
             if (current_field == .username and username_len < max_input_len) {
-                username_buffer[username_len] = byte;
+                // Shift characters right to make room
+                var j: usize = username_len;
+                while (j > username_cursor) : (j -= 1) {
+                    username_buffer[j] = username_buffer[j - 1];
+                }
+                username_buffer[username_cursor] = byte;
                 username_len += 1;
+                username_cursor += 1;
             } else if (current_field == .password and password_len < max_input_len) {
-                password_buffer[password_len] = byte;
+                var j: usize = password_len;
+                while (j > password_cursor) : (j -= 1) {
+                    password_buffer[j] = password_buffer[j - 1];
+                }
+                password_buffer[password_cursor] = byte;
                 password_len += 1;
+                password_cursor += 1;
             }
         }
     }
