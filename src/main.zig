@@ -38,6 +38,52 @@ extern "kernel32" fn WriteConsoleA(
     lpReserved: ?*anyopaque,
 ) callconv(WINAPI) BOOL;
 
+// Windows console input event structures
+const KEY_EVENT: u16 = 0x0001;
+const WINDOW_BUFFER_SIZE_EVENT: u16 = 0x0004;
+
+const COORD = extern struct {
+    X: i16,
+    Y: i16,
+};
+
+const KEY_EVENT_RECORD = extern struct {
+    bKeyDown: BOOL,
+    wRepeatCount: u16,
+    wVirtualKeyCode: u16,
+    wVirtualScanCode: u16,
+    uChar: extern union {
+        UnicodeChar: u16,
+        AsciiChar: u8,
+    },
+    dwControlKeyState: u32,
+};
+
+const INPUT_RECORD = extern struct {
+    EventType: u16,
+    Event: extern union {
+        KeyEvent: KEY_EVENT_RECORD,
+        WindowBufferSizeEvent: extern struct {
+            dwSize: COORD,
+        },
+        padding: [16]u8,
+    },
+};
+
+extern "kernel32" fn PeekConsoleInputA(
+    hConsoleInput: std.os.windows.HANDLE,
+    lpBuffer: [*]INPUT_RECORD,
+    nLength: u32,
+    lpNumberOfEventsRead: *u32,
+) callconv(WINAPI) BOOL;
+
+extern "kernel32" fn ReadConsoleInputA(
+    hConsoleInput: std.os.windows.HANDLE,
+    lpBuffer: [*]INPUT_RECORD,
+    nLength: u32,
+    lpNumberOfEventsRead: *u32,
+) callconv(WINAPI) BOOL;
+
 // Global state for cleanup in signal handler
 var g_original_input_mode: u32 = undefined;
 var g_original_output_cp: u32 = undefined;
@@ -133,6 +179,43 @@ fn clearScreen() void {
     }
 }
 
+// Read input and handle window resize events
+// Returns: null if window was resized (need to redraw), otherwise the input byte
+fn readInputOrResize(stdin: anytype) !?u8 {
+    const is_windows = @import("builtin").os.tag == .windows;
+
+    if (is_windows) {
+        const stdin_handle = std.fs.File.stdin().handle;
+        var input_rec: INPUT_RECORD = undefined;
+        var events_read: u32 = 0;
+
+        while (true) {
+            // Read console input event
+            if (ReadConsoleInputA(stdin_handle, @ptrCast(&input_rec), 1, &events_read) == 0) {
+                return error.ReadFailed;
+            }
+
+            if (events_read == 0) continue;
+
+            // Check event type
+            if (input_rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+                // Window was resized - return null to trigger redraw
+                return null;
+            } else if (input_rec.EventType == KEY_EVENT) {
+                const key_event = input_rec.Event.KeyEvent;
+                // Only process key down events
+                if (key_event.bKeyDown != 0) {
+                    return key_event.uChar.AsciiChar;
+                }
+            }
+            // Ignore other event types and key-up events
+        }
+    } else {
+        // Non-Windows: just read a byte normally
+        return try stdin.takeByte();
+    }
+}
+
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
@@ -193,13 +276,14 @@ pub fn main() !void {
 
         // Get current console mode for stdin
         if (win.kernel32.GetConsoleMode(stdin_handle, &original_input_mode) != 0) {
-            // Configure for raw mode with Virtual Terminal Input
+            // Configure for raw mode with Virtual Terminal Input and Window Input
             const ENABLE_LINE_INPUT: u32 = 0x0002;
             const ENABLE_ECHO_INPUT: u32 = 0x0004;
             const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+            const ENABLE_WINDOW_INPUT: u32 = 0x0008;
 
-            // Disable line and echo, but keep processed input and enable VT input
-            const new_mode = (original_input_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT)) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+            // Disable line and echo, but keep processed input and enable VT input and window events
+            const new_mode = (original_input_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT)) | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT;
 
             if (win.kernel32.SetConsoleMode(stdin_handle, new_mode) != 0) {
                 raw_mode_enabled = true;
@@ -469,8 +553,13 @@ pub fn main() !void {
 
         try stdout.flush();
 
-        // Read input
-        const byte = try stdin.takeByte();
+        // Read input or handle resize
+        const maybe_byte = try readInputOrResize(stdin);
+        if (maybe_byte == null) {
+            // Window was resized - redraw UI by continuing the loop
+            continue;
+        }
+        const byte = maybe_byte.?;
 
         // Handle escape sequences (arrow keys) and Windows scan codes
         if (byte == 0x1B) { // ESC - ANSI escape sequence
