@@ -252,6 +252,10 @@ pub fn main() !void {
     var register_field: RegisterField = .username;
     var done = false;
 
+    // Track whether we've already asked the terminal to show the cursor.
+    // This prevents redundant show/hide sequences each redraw (reduces flicker).
+    var cursor_visible: bool = false;
+
     // Enable UTF-8 output on Windows
     const is_windows = @import("builtin").os.tag == .windows;
     var original_input_mode: u32 = undefined;
@@ -301,6 +305,7 @@ pub fn main() !void {
     // Clear screen and hide cursor
     clearScreen();
     try stdout.writeAll("\x1b[?25l");
+    cursor_visible = false;
     try stdout.flush();
 
     defer {
@@ -316,6 +321,7 @@ pub fn main() !void {
             }
         }
         // Show cursor
+        // Always try to show the cursor on exit (regardless of cursor_visible).
         stdout.writeAll("\x1b[?25h") catch {};
         stdout.flush() catch {};
     }
@@ -416,14 +422,23 @@ pub fn main() !void {
             if (login_field == .username) {
                 const cursor_col = offset.col + 14 + username_cursor;
                 try stdout.print("\x1b[{d};{d}H", .{ offset.row + 5, cursor_col + 1 });
-                try stdout.writeAll("\x1b[?25h");
+                if (!cursor_visible) {
+                    try stdout.writeAll("\x1b[?25h");
+                    cursor_visible = true;
+                }
             } else if (login_field == .password) {
                 const cursor_col = offset.col + 14 + password_cursor;
                 try stdout.print("\x1b[{d};{d}H", .{ offset.row + 7, cursor_col + 1 });
-                try stdout.writeAll("\x1b[?25h");
+                if (!cursor_visible) {
+                    try stdout.writeAll("\x1b[?25h");
+                    cursor_visible = true;
+                }
             } else {
                 // Hide cursor for buttons
-                try stdout.writeAll("\x1b[?25l");
+                if (cursor_visible) {
+                    try stdout.writeAll("\x1b[?25l");
+                    cursor_visible = false;
+                }
             }
         } else {
             // REGISTER SCREEN
@@ -536,18 +551,30 @@ pub fn main() !void {
             if (register_field == .username) {
                 const cursor_col = offset.col + 14 + username_cursor;
                 try stdout.print("\x1b[{d};{d}H", .{ offset.row + 5, cursor_col + 1 });
-                try stdout.writeAll("\x1b[?25h");
+                if (!cursor_visible) {
+                    try stdout.writeAll("\x1b[?25h");
+                    cursor_visible = true;
+                }
             } else if (register_field == .password) {
                 const cursor_col = offset.col + 14 + password_cursor;
                 try stdout.print("\x1b[{d};{d}H", .{ offset.row + 7, cursor_col + 1 });
-                try stdout.writeAll("\x1b[?25h");
+                if (!cursor_visible) {
+                    try stdout.writeAll("\x1b[?25h");
+                    cursor_visible = true;
+                }
             } else if (register_field == .confirm_password) {
                 const cursor_col = offset.col + 14 + confirm_password_cursor;
                 try stdout.print("\x1b[{d};{d}H", .{ offset.row + 9, cursor_col + 1 });
-                try stdout.writeAll("\x1b[?25h");
+                if (!cursor_visible) {
+                    try stdout.writeAll("\x1b[?25h");
+                    cursor_visible = true;
+                }
             } else {
                 // Hide cursor for buttons
-                try stdout.writeAll("\x1b[?25l");
+                if (cursor_visible) {
+                    try stdout.writeAll("\x1b[?25l");
+                    cursor_visible = false;
+                }
             }
         }
 
