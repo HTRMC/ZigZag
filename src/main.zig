@@ -1,8 +1,23 @@
 const std = @import("std");
 
-const Field = enum {
+const Screen = enum {
+    login,
+    register,
+};
+
+const LoginField = enum {
     username,
     password,
+    forgot_password,
+    register,
+};
+
+const RegisterField = enum {
+    username,
+    password,
+    confirm_password,
+    create_account,
+    back_to_login,
 };
 
 // Windows Ctrl+C handler setup
@@ -54,6 +69,48 @@ fn ctrlHandler(dwCtrlType: u32) callconv(WINAPI) BOOL {
     return 0; // Let default handler terminate the process
 }
 
+const TerminalSize = struct {
+    width: u16,
+    height: u16,
+};
+
+fn getTerminalSize() TerminalSize {
+    if (@import("builtin").os.tag == .windows) {
+        const win = std.os.windows;
+        const stdout_handle = std.fs.File.stdout().handle;
+
+        var csbi: win.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        if (win.kernel32.GetConsoleScreenBufferInfo(stdout_handle, &csbi) != 0) {
+            // Use window size, not buffer size
+            const width: u16 = @intCast(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+            const height: u16 = @intCast(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+            return TerminalSize{ .width = width, .height = height };
+        }
+    }
+    // Default fallback
+    return TerminalSize{ .width = 80, .height = 24 };
+}
+
+const CenterOffset = struct {
+    row: u16,
+    col: u16,
+};
+
+fn calculateCenterOffset(term_size: TerminalSize, ui_width: u16, ui_height: u16) CenterOffset {
+    const row = if (term_size.height > ui_height) (term_size.height - ui_height) / 2 else 0;
+    const col = if (term_size.width > ui_width) (term_size.width - ui_width) / 2 else 0;
+    return CenterOffset{ .row = row, .col = col };
+}
+
+fn writeCenteredLine(writer: anytype, offset: CenterOffset, line: []const u8) !void {
+    var i: u16 = 0;
+    while (i < offset.col) : (i += 1) {
+        try writer.writeAll(" ");
+    }
+    try writer.writeAll(line);
+    try writer.writeAll("\n");
+}
+
 fn clearScreen() void {
     if (@import("builtin").os.tag == .windows) {
         const win = std.os.windows;
@@ -99,12 +156,17 @@ pub fn main() !void {
     // Buffers to store username and password
     var username_buffer: [256]u8 = undefined;
     var password_buffer: [256]u8 = undefined;
+    var confirm_password_buffer: [256]u8 = undefined;
     var username_len: usize = 0;
     var password_len: usize = 0;
+    var confirm_password_len: usize = 0;
     var username_cursor: usize = 0;
     var password_cursor: usize = 0;
+    var confirm_password_cursor: usize = 0;
 
-    var current_field: Field = .username;
+    var current_screen: Screen = .login;
+    var login_field: LoginField = .username;
+    var register_field: RegisterField = .username;
     var done = false;
 
     // Enable UTF-8 output on Windows
@@ -177,71 +239,238 @@ pub fn main() !void {
     while (!done) {
         // Clear and redraw UI
         clearScreen();
-        try stdout.writeAll("╔════════════════════════════════════════╗\n");
-        try stdout.writeAll("║          Login Form (ZigZag)           ║\n");
-        try stdout.writeAll("╠════════════════════════════════════════╣\n");
-        try stdout.writeAll("║                                        ║\n");
 
-        // Username field
-        if (current_field == .username) {
-            try stdout.writeAll("║ ► Username: ");
+        // Get terminal size and calculate center offset
+        const term_size = getTerminalSize();
+        const ui_width: u16 = 42; // Box is 42 characters wide
+        const ui_height: u16 = if (current_screen == .login) 16 else 18; // Login: 14 lines + 1 blank + 1 help, Register: 16 + 1 + 1
+        const offset = calculateCenterOffset(term_size, ui_width, ui_height);
+
+        // Move cursor to starting position
+        try stdout.print("\x1b[{d};1H", .{offset.row + 1});
+
+        if (current_screen == .login) {
+            // LOGIN SCREEN
+            try writeCenteredLine(stdout, offset, "╔════════════════════════════════════════╗");
+            try writeCenteredLine(stdout, offset, "║          Login Form (ZigZag)           ║");
+            try writeCenteredLine(stdout, offset, "╠════════════════════════════════════════╣");
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Username field
+            const display_username_len = @min(username_len, 25);
+            const username_padding = if (username_len < 27) 27 - username_len else 0;
+            const username_line = blk: {
+                const prefix = if (login_field == .username) "║ ► Username: " else "║   Username: ";
+                var user_buf: [256]u8 = undefined;
+                var user_idx: usize = 0;
+                @memcpy(user_buf[user_idx..][0..prefix.len], prefix);
+                user_idx += prefix.len;
+                @memcpy(user_buf[user_idx..][0..display_username_len], username_buffer[0..display_username_len]);
+                user_idx += display_username_len;
+                var i: usize = 0;
+                while (i < username_padding) : (i += 1) {
+                    user_buf[user_idx] = ' ';
+                    user_idx += 1;
+                }
+                @memcpy(user_buf[user_idx..][0..3], "║");
+                user_idx += 3;
+                break :blk user_buf[0..user_idx];
+            };
+            try writeCenteredLine(stdout, offset, username_line);
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Password field
+            const display_password_len = @min(password_len, 25);
+            const password_padding = if (password_len < 27) 27 - password_len else 0;
+            const password_line = blk: {
+                const prefix = if (login_field == .password) "║ ► Password: " else "║   Password: ";
+                var pwd_buf: [256]u8 = undefined;
+                var pwd_idx: usize = 0;
+                @memcpy(pwd_buf[pwd_idx..][0..prefix.len], prefix);
+                pwd_idx += prefix.len;
+                var i: usize = 0;
+                while (i < display_password_len) : (i += 1) {
+                    pwd_buf[pwd_idx] = '*';
+                    pwd_idx += 1;
+                }
+                i = 0;
+                while (i < password_padding) : (i += 1) {
+                    pwd_buf[pwd_idx] = ' ';
+                    pwd_idx += 1;
+                }
+                @memcpy(pwd_buf[pwd_idx..][0..3], "║");
+                pwd_idx += 3;
+                break :blk pwd_buf[0..pwd_idx];
+            };
+            try writeCenteredLine(stdout, offset, password_line);
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Forgot password button
+            if (login_field == .forgot_password) {
+                try writeCenteredLine(stdout, offset, "║ ► Forgot your password?                ║");
+            } else {
+                try writeCenteredLine(stdout, offset, "║   Forgot your password?                ║");
+            }
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Register button
+            if (login_field == .register) {
+                try writeCenteredLine(stdout, offset, "║ ► Need an account? Register            ║");
+            } else {
+                try writeCenteredLine(stdout, offset, "║   Need an account? Register            ║");
+            }
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+            try writeCenteredLine(stdout, offset, "╚════════════════════════════════════════╝");
+            try writeCenteredLine(stdout, offset, "");
+            try writeCenteredLine(stdout, offset, "↑/↓: Navigate  │  ←/→: Move cursor  │  Enter: Select  │  Esc: Exit");
+
+            // Position cursor
+            if (login_field == .username) {
+                const cursor_col = offset.col + 14 + username_cursor;
+                try stdout.print("\x1b[{d};{d}H", .{ offset.row + 5, cursor_col + 1 });
+                try stdout.writeAll("\x1b[?25h");
+            } else if (login_field == .password) {
+                const cursor_col = offset.col + 14 + password_cursor;
+                try stdout.print("\x1b[{d};{d}H", .{ offset.row + 7, cursor_col + 1 });
+                try stdout.writeAll("\x1b[?25h");
+            } else {
+                // Hide cursor for buttons
+                try stdout.writeAll("\x1b[?25l");
+            }
         } else {
-            try stdout.writeAll("║   Username: ");
-        }
-        const display_username_len = @min(username_len, 25);
-        try stdout.writeAll(username_buffer[0..display_username_len]);
-        // Pad to align the box (27 = max_len + 2 for safety)
-        const username_padding = if (username_len < 27) 27 - username_len else 0;
-        var i: usize = 0;
-        while (i < username_padding) : (i += 1) {
-            try stdout.writeAll(" ");
-        }
-        try stdout.writeAll("║\n");
+            // REGISTER SCREEN
 
-        try stdout.writeAll("║                                        ║\n");
+            try writeCenteredLine(stdout, offset, "╔════════════════════════════════════════╗");
+            try writeCenteredLine(stdout, offset, "║        Register Form (ZigZag)          ║");
+            try writeCenteredLine(stdout, offset, "╠════════════════════════════════════════╣");
+            try writeCenteredLine(stdout, offset, "║                                        ║");
 
-        // Password field
-        if (current_field == .password) {
-            try stdout.writeAll("║ ► Password: ");
-        } else {
-            try stdout.writeAll("║   Password: ");
-        }
-        // Show password as asterisks
-        const display_password_len = @min(password_len, 25);
-        i = 0;
-        while (i < display_password_len) : (i += 1) {
-            try stdout.writeAll("*");
-        }
-        const password_padding = if (password_len < 27) 27 - password_len else 0;
-        i = 0;
-        while (i < password_padding) : (i += 1) {
-            try stdout.writeAll(" ");
-        }
-        try stdout.writeAll("║\n");
+            // Username field
+            const display_username_len = @min(username_len, 25);
+            const username_padding = if (username_len < 27) 27 - username_len else 0;
+            const username_line = blk: {
+                const prefix = if (register_field == .username) "║ ► Username: " else "║   Username: ";
+                var user_buf: [256]u8 = undefined;
+                var user_idx: usize = 0;
+                @memcpy(user_buf[user_idx..][0..prefix.len], prefix);
+                user_idx += prefix.len;
+                @memcpy(user_buf[user_idx..][0..display_username_len], username_buffer[0..display_username_len]);
+                user_idx += display_username_len;
+                var i: usize = 0;
+                while (i < username_padding) : (i += 1) {
+                    user_buf[user_idx] = ' ';
+                    user_idx += 1;
+                }
+                @memcpy(user_buf[user_idx..][0..3], "║");
+                user_idx += 3;
+                break :blk user_buf[0..user_idx];
+            };
+            try writeCenteredLine(stdout, offset, username_line);
 
-        try stdout.writeAll("║                                        ║\n");
-        try stdout.writeAll("╚════════════════════════════════════════╝\n");
-        try stdout.writeAll("\n");
-        try stdout.writeAll("↑/↓: Navigate  │  ←/→: Move cursor  │  Enter: Next/Submit  │  Esc: Exit\n");
+            try writeCenteredLine(stdout, offset, "║                                        ║");
 
-        // Position cursor at the correct location
-        if (current_field == .username) {
-            const cursor_col = 14 + username_cursor; // "║ ► Username: " = 14 chars
-            try stdout.print("\x1b[5;{d}H", .{cursor_col + 1}); // Row 5, column (1-indexed)
-        } else {
-            const cursor_col = 14 + password_cursor; // "║ ► Password: " = 14 chars
-            try stdout.print("\x1b[7;{d}H", .{cursor_col + 1}); // Row 7, column (1-indexed)
+            // Password field
+            const display_password_len = @min(password_len, 25);
+            const password_padding = if (password_len < 27) 27 - password_len else 0;
+            const password_line = blk: {
+                const prefix = if (register_field == .password) "║ ► Password: " else "║   Password: ";
+                var pwd_buf: [256]u8 = undefined;
+                var pwd_idx: usize = 0;
+                @memcpy(pwd_buf[pwd_idx..][0..prefix.len], prefix);
+                pwd_idx += prefix.len;
+                var i: usize = 0;
+                while (i < display_password_len) : (i += 1) {
+                    pwd_buf[pwd_idx] = '*';
+                    pwd_idx += 1;
+                }
+                i = 0;
+                while (i < password_padding) : (i += 1) {
+                    pwd_buf[pwd_idx] = ' ';
+                    pwd_idx += 1;
+                }
+                @memcpy(pwd_buf[pwd_idx..][0..3], "║");
+                pwd_idx += 3;
+                break :blk pwd_buf[0..pwd_idx];
+            };
+            try writeCenteredLine(stdout, offset, password_line);
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Confirm Password field
+            const display_confirm_len = @min(confirm_password_len, 25);
+            const confirm_padding = if (confirm_password_len < 27) 27 - confirm_password_len else 0;
+            const confirm_line = blk: {
+                const prefix = if (register_field == .confirm_password) "║ ► Confirm:  " else "║   Confirm:  ";
+                var conf_buf: [256]u8 = undefined;
+                var conf_idx: usize = 0;
+                @memcpy(conf_buf[conf_idx..][0..prefix.len], prefix);
+                conf_idx += prefix.len;
+                var i: usize = 0;
+                while (i < display_confirm_len) : (i += 1) {
+                    conf_buf[conf_idx] = '*';
+                    conf_idx += 1;
+                }
+                i = 0;
+                while (i < confirm_padding) : (i += 1) {
+                    conf_buf[conf_idx] = ' ';
+                    conf_idx += 1;
+                }
+                @memcpy(conf_buf[conf_idx..][0..3], "║");
+                conf_idx += 3;
+                break :blk conf_buf[0..conf_idx];
+            };
+            try writeCenteredLine(stdout, offset, confirm_line);
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Create Account button
+            if (register_field == .create_account) {
+                try writeCenteredLine(stdout, offset, "║ ► Create Account                       ║");
+            } else {
+                try writeCenteredLine(stdout, offset, "║   Create Account                       ║");
+            }
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+
+            // Back to Login button
+            if (register_field == .back_to_login) {
+                try writeCenteredLine(stdout, offset, "║ ► Already have an account? Login       ║");
+            } else {
+                try writeCenteredLine(stdout, offset, "║   Already have an account? Login       ║");
+            }
+
+            try writeCenteredLine(stdout, offset, "║                                        ║");
+            try writeCenteredLine(stdout, offset, "╚════════════════════════════════════════╝");
+            try writeCenteredLine(stdout, offset, "");
+            try writeCenteredLine(stdout, offset, "↑/↓: Navigate  │  ←/→: Move cursor  │  Enter: Select  │  Esc: Exit");
+
+            // Position cursor
+            if (register_field == .username) {
+                const cursor_col = offset.col + 14 + username_cursor;
+                try stdout.print("\x1b[{d};{d}H", .{ offset.row + 5, cursor_col + 1 });
+                try stdout.writeAll("\x1b[?25h");
+            } else if (register_field == .password) {
+                const cursor_col = offset.col + 14 + password_cursor;
+                try stdout.print("\x1b[{d};{d}H", .{ offset.row + 7, cursor_col + 1 });
+                try stdout.writeAll("\x1b[?25h");
+            } else if (register_field == .confirm_password) {
+                const cursor_col = offset.col + 14 + confirm_password_cursor;
+                try stdout.print("\x1b[{d};{d}H", .{ offset.row + 9, cursor_col + 1 });
+                try stdout.writeAll("\x1b[?25h");
+            } else {
+                // Hide cursor for buttons
+                try stdout.writeAll("\x1b[?25l");
+            }
         }
-        // Show cursor
-        try stdout.writeAll("\x1b[?25h");
+
         try stdout.flush();
 
         // Read input
         const byte = try stdin.takeByte();
-
-        // Hide cursor while processing
-        try stdout.writeAll("\x1b[?25l");
-        try stdout.flush();
 
         // Handle escape sequences (arrow keys) and Windows scan codes
         if (byte == 0x1B) { // ESC - ANSI escape sequence
@@ -253,117 +482,366 @@ pub fn main() !void {
             if (next == '[') {
                 const arrow = try stdin.takeByte();
                 if (arrow == 'A') { // Up arrow
-                    current_field = .username;
+                    if (current_screen == .login) {
+                        login_field = switch (login_field) {
+                            .username => .username,
+                            .password => .username,
+                            .forgot_password => .password,
+                            .register => .forgot_password,
+                        };
+                    } else {
+                        register_field = switch (register_field) {
+                            .username => .username,
+                            .password => .username,
+                            .confirm_password => .password,
+                            .create_account => .confirm_password,
+                            .back_to_login => .create_account,
+                        };
+                    }
                 } else if (arrow == 'B') { // Down arrow
-                    current_field = .password;
+                    if (current_screen == .login) {
+                        login_field = switch (login_field) {
+                            .username => .password,
+                            .password => .forgot_password,
+                            .forgot_password => .register,
+                            .register => .register,
+                        };
+                    } else {
+                        register_field = switch (register_field) {
+                            .username => .password,
+                            .password => .confirm_password,
+                            .confirm_password => .create_account,
+                            .create_account => .back_to_login,
+                            .back_to_login => .back_to_login,
+                        };
+                    }
                 } else if (arrow == 'D') { // Left arrow
-                    if (current_field == .username and username_cursor > 0) {
-                        username_cursor -= 1;
-                    } else if (current_field == .password and password_cursor > 0) {
-                        password_cursor -= 1;
+                    if (current_screen == .login) {
+                        if (login_field == .username and username_cursor > 0) {
+                            username_cursor -= 1;
+                        } else if (login_field == .password and password_cursor > 0) {
+                            password_cursor -= 1;
+                        }
+                    } else {
+                        if (register_field == .username and username_cursor > 0) {
+                            username_cursor -= 1;
+                        } else if (register_field == .password and password_cursor > 0) {
+                            password_cursor -= 1;
+                        } else if (register_field == .confirm_password and confirm_password_cursor > 0) {
+                            confirm_password_cursor -= 1;
+                        }
                     }
                 } else if (arrow == 'C') { // Right arrow
-                    if (current_field == .username and username_cursor < username_len) {
-                        username_cursor += 1;
-                    } else if (current_field == .password and password_cursor < password_len) {
-                        password_cursor += 1;
+                    if (current_screen == .login) {
+                        if (login_field == .username and username_cursor < username_len) {
+                            username_cursor += 1;
+                        } else if (login_field == .password and password_cursor < password_len) {
+                            password_cursor += 1;
+                        }
+                    } else {
+                        if (register_field == .username and username_cursor < username_len) {
+                            username_cursor += 1;
+                        } else if (register_field == .password and password_cursor < password_len) {
+                            password_cursor += 1;
+                        } else if (register_field == .confirm_password and confirm_password_cursor < confirm_password_len) {
+                            confirm_password_cursor += 1;
+                        }
                     }
                 }
             }
         } else if (byte == 0xE0 or byte == 0x00) { // Windows extended key scan code
             const scan = try stdin.takeByte();
             if (scan == 0x48) { // Up arrow
-                current_field = .username;
+                if (current_screen == .login) {
+                    login_field = switch (login_field) {
+                        .username => .username,
+                        .password => .username,
+                        .forgot_password => .password,
+                        .register => .forgot_password,
+                    };
+                } else {
+                    register_field = switch (register_field) {
+                        .username => .username,
+                        .password => .username,
+                        .confirm_password => .password,
+                        .create_account => .confirm_password,
+                        .back_to_login => .create_account,
+                    };
+                }
             } else if (scan == 0x50) { // Down arrow
-                current_field = .password;
+                if (current_screen == .login) {
+                    login_field = switch (login_field) {
+                        .username => .password,
+                        .password => .forgot_password,
+                        .forgot_password => .register,
+                        .register => .register,
+                    };
+                } else {
+                    register_field = switch (register_field) {
+                        .username => .password,
+                        .password => .confirm_password,
+                        .confirm_password => .create_account,
+                        .create_account => .back_to_login,
+                        .back_to_login => .back_to_login,
+                    };
+                }
             } else if (scan == 0x4B) { // Left arrow
-                if (current_field == .username and username_cursor > 0) {
-                    username_cursor -= 1;
-                } else if (current_field == .password and password_cursor > 0) {
-                    password_cursor -= 1;
+                if (current_screen == .login) {
+                    if (login_field == .username and username_cursor > 0) {
+                        username_cursor -= 1;
+                    } else if (login_field == .password and password_cursor > 0) {
+                        password_cursor -= 1;
+                    }
+                } else {
+                    if (register_field == .username and username_cursor > 0) {
+                        username_cursor -= 1;
+                    } else if (register_field == .password and password_cursor > 0) {
+                        password_cursor -= 1;
+                    } else if (register_field == .confirm_password and confirm_password_cursor > 0) {
+                        confirm_password_cursor -= 1;
+                    }
                 }
             } else if (scan == 0x4D) { // Right arrow
-                if (current_field == .username and username_cursor < username_len) {
-                    username_cursor += 1;
-                } else if (current_field == .password and password_cursor < password_len) {
-                    password_cursor += 1;
+                if (current_screen == .login) {
+                    if (login_field == .username and username_cursor < username_len) {
+                        username_cursor += 1;
+                    } else if (login_field == .password and password_cursor < password_len) {
+                        password_cursor += 1;
+                    }
+                } else {
+                    if (register_field == .username and username_cursor < username_len) {
+                        username_cursor += 1;
+                    } else if (register_field == .password and password_cursor < password_len) {
+                        password_cursor += 1;
+                    } else if (register_field == .confirm_password and confirm_password_cursor < confirm_password_len) {
+                        confirm_password_cursor += 1;
+                    }
                 }
             }
         } else if (byte == '\r' or byte == '\n') {
-            // Enter key - move to next field or submit
-            if (current_field == .username) {
-                current_field = .password;
+            // Enter key - select button or submit
+            if (current_screen == .login) {
+                if (login_field == .username) {
+                    login_field = .password;
+                } else if (login_field == .password) {
+                    // Submit login
+                    done = true;
+                } else if (login_field == .forgot_password) {
+                    // TODO: Handle forgot password
+                    done = true;
+                } else if (login_field == .register) {
+                    // Switch to register screen
+                    current_screen = .register;
+                    register_field = .username;
+                }
             } else {
-                done = true; // Submit when on password field
+                if (register_field == .username) {
+                    register_field = .password;
+                } else if (register_field == .password) {
+                    register_field = .confirm_password;
+                } else if (register_field == .confirm_password) {
+                    register_field = .create_account;
+                } else if (register_field == .create_account) {
+                    // Submit registration
+                    done = true;
+                } else if (register_field == .back_to_login) {
+                    // Switch back to login screen
+                    current_screen = .login;
+                    login_field = .username;
+                    // Reset register fields
+                    confirm_password_len = 0;
+                    confirm_password_cursor = 0;
+                }
             }
         } else if (byte == 127 or byte == 8) { // Backspace
-            if (current_field == .username and username_cursor > 0) {
-                // Shift characters left
-                var j: usize = username_cursor;
-                while (j < username_len) : (j += 1) {
-                    username_buffer[j - 1] = username_buffer[j];
+            if (current_screen == .login) {
+                if (login_field == .username and username_cursor > 0) {
+                    var j: usize = username_cursor;
+                    while (j < username_len) : (j += 1) {
+                        username_buffer[j - 1] = username_buffer[j];
+                    }
+                    username_len -= 1;
+                    username_cursor -= 1;
+                } else if (login_field == .password and password_cursor > 0) {
+                    var j: usize = password_cursor;
+                    while (j < password_len) : (j += 1) {
+                        password_buffer[j - 1] = password_buffer[j];
+                    }
+                    password_len -= 1;
+                    password_cursor -= 1;
                 }
-                username_len -= 1;
-                username_cursor -= 1;
-            } else if (current_field == .password and password_cursor > 0) {
-                var j: usize = password_cursor;
-                while (j < password_len) : (j += 1) {
-                    password_buffer[j - 1] = password_buffer[j];
+            } else {
+                if (register_field == .username and username_cursor > 0) {
+                    var j: usize = username_cursor;
+                    while (j < username_len) : (j += 1) {
+                        username_buffer[j - 1] = username_buffer[j];
+                    }
+                    username_len -= 1;
+                    username_cursor -= 1;
+                } else if (register_field == .password and password_cursor > 0) {
+                    var j: usize = password_cursor;
+                    while (j < password_len) : (j += 1) {
+                        password_buffer[j - 1] = password_buffer[j];
+                    }
+                    password_len -= 1;
+                    password_cursor -= 1;
+                } else if (register_field == .confirm_password and confirm_password_cursor > 0) {
+                    var j: usize = confirm_password_cursor;
+                    while (j < confirm_password_len) : (j += 1) {
+                        confirm_password_buffer[j - 1] = confirm_password_buffer[j];
+                    }
+                    confirm_password_len -= 1;
+                    confirm_password_cursor -= 1;
                 }
-                password_len -= 1;
-                password_cursor -= 1;
             }
         } else if (byte >= 32 and byte <= 126) { // Printable characters
             const max_input_len = 25;
-            if (current_field == .username and username_len < max_input_len) {
-                // Shift characters right to make room
-                var j: usize = username_len;
-                while (j > username_cursor) : (j -= 1) {
-                    username_buffer[j] = username_buffer[j - 1];
+            if (current_screen == .login) {
+                if (login_field == .username and username_len < max_input_len) {
+                    var j: usize = username_len;
+                    while (j > username_cursor) : (j -= 1) {
+                        username_buffer[j] = username_buffer[j - 1];
+                    }
+                    username_buffer[username_cursor] = byte;
+                    username_len += 1;
+                    username_cursor += 1;
+                } else if (login_field == .password and password_len < max_input_len) {
+                    var j: usize = password_len;
+                    while (j > password_cursor) : (j -= 1) {
+                        password_buffer[j] = password_buffer[j - 1];
+                    }
+                    password_buffer[password_cursor] = byte;
+                    password_len += 1;
+                    password_cursor += 1;
                 }
-                username_buffer[username_cursor] = byte;
-                username_len += 1;
-                username_cursor += 1;
-            } else if (current_field == .password and password_len < max_input_len) {
-                var j: usize = password_len;
-                while (j > password_cursor) : (j -= 1) {
-                    password_buffer[j] = password_buffer[j - 1];
+            } else {
+                if (register_field == .username and username_len < max_input_len) {
+                    var j: usize = username_len;
+                    while (j > username_cursor) : (j -= 1) {
+                        username_buffer[j] = username_buffer[j - 1];
+                    }
+                    username_buffer[username_cursor] = byte;
+                    username_len += 1;
+                    username_cursor += 1;
+                } else if (register_field == .password and password_len < max_input_len) {
+                    var j: usize = password_len;
+                    while (j > password_cursor) : (j -= 1) {
+                        password_buffer[j] = password_buffer[j - 1];
+                    }
+                    password_buffer[password_cursor] = byte;
+                    password_len += 1;
+                    password_cursor += 1;
+                } else if (register_field == .confirm_password and confirm_password_len < max_input_len) {
+                    var j: usize = confirm_password_len;
+                    while (j > confirm_password_cursor) : (j -= 1) {
+                        confirm_password_buffer[j] = confirm_password_buffer[j - 1];
+                    }
+                    confirm_password_buffer[confirm_password_cursor] = byte;
+                    confirm_password_len += 1;
+                    confirm_password_cursor += 1;
                 }
-                password_buffer[password_cursor] = byte;
-                password_len += 1;
-                password_cursor += 1;
             }
         }
     }
 
     // Clear screen and show results
     clearScreen();
-    try stdout.writeAll("╔════════════════════════════════════════╗\n");
-    try stdout.writeAll("║              Login Result              ║\n");
-    try stdout.writeAll("╠════════════════════════════════════════╣\n");
-    try stdout.writeAll("║                                        ║\n");
+
+    // Calculate center offset for result screen
+    const term_size = getTerminalSize();
+    const result_ui_width: u16 = 42; // Box is 42 characters wide
+    const result_ui_height: u16 = if (current_screen == .login) 8 else 10; // Login: 8 lines, Register: 10 lines
+    const result_offset = calculateCenterOffset(term_size, result_ui_width, result_ui_height);
+
+    // Move cursor to starting position
+    try stdout.print("\x1b[{d};1H", .{result_offset.row + 1});
+
+    try writeCenteredLine(stdout, result_offset, "╔════════════════════════════════════════╗");
+
+    if (current_screen == .login) {
+        try writeCenteredLine(stdout, result_offset, "║              Login Result              ║");
+    } else {
+        try writeCenteredLine(stdout, result_offset, "║           Registration Result          ║");
+    }
+
+    try writeCenteredLine(stdout, result_offset, "╠════════════════════════════════════════╣");
+    try writeCenteredLine(stdout, result_offset, "║                                        ║");
 
     // Username result
-    try stdout.writeAll("║  Username: ");
-    try stdout.writeAll(username_buffer[0..username_len]);
     const result_username_padding = if (username_len < 28) 28 - username_len else 0;
-    var result_i: usize = 0;
-    while (result_i < result_username_padding) : (result_i += 1) {
-        try stdout.writeAll(" ");
-    }
-    try stdout.writeAll("║\n");
+    const username_result_line = blk: {
+        var user_result_buf: [256]u8 = undefined;
+        var user_result_idx: usize = 0;
+        const prefix = "║  Username: ";
+        @memcpy(user_result_buf[user_result_idx..][0..prefix.len], prefix);
+        user_result_idx += prefix.len;
+        @memcpy(user_result_buf[user_result_idx..][0..username_len], username_buffer[0..username_len]);
+        user_result_idx += username_len;
+        var i: usize = 0;
+        while (i < result_username_padding) : (i += 1) {
+            user_result_buf[user_result_idx] = ' ';
+            user_result_idx += 1;
+        }
+        @memcpy(user_result_buf[user_result_idx..][0..3], "║");
+        user_result_idx += 3;
+        break :blk user_result_buf[0..user_result_idx];
+    };
+    try writeCenteredLine(stdout, result_offset, username_result_line);
 
     // Password result
-    try stdout.writeAll("║  Password: ");
-    try stdout.writeAll(password_buffer[0..password_len]);
     const result_password_padding = if (password_len < 28) 28 - password_len else 0;
-    result_i = 0;
-    while (result_i < result_password_padding) : (result_i += 1) {
-        try stdout.writeAll(" ");
-    }
-    try stdout.writeAll("║\n");
+    const password_result_line = blk: {
+        var pwd_result_buf: [256]u8 = undefined;
+        var pwd_result_idx: usize = 0;
+        const prefix = "║  Password: ";
+        @memcpy(pwd_result_buf[pwd_result_idx..][0..prefix.len], prefix);
+        pwd_result_idx += prefix.len;
+        @memcpy(pwd_result_buf[pwd_result_idx..][0..password_len], password_buffer[0..password_len]);
+        pwd_result_idx += password_len;
+        var i: usize = 0;
+        while (i < result_password_padding) : (i += 1) {
+            pwd_result_buf[pwd_result_idx] = ' ';
+            pwd_result_idx += 1;
+        }
+        @memcpy(pwd_result_buf[pwd_result_idx..][0..3], "║");
+        pwd_result_idx += 3;
+        break :blk pwd_result_buf[0..pwd_result_idx];
+    };
+    try writeCenteredLine(stdout, result_offset, password_result_line);
 
-    try stdout.writeAll("║                                        ║\n");
-    try stdout.writeAll("╚════════════════════════════════════════╝\n");
+    // Confirm password result (only in register mode)
+    if (current_screen == .register) {
+        const result_confirm_padding = if (confirm_password_len < 28) 28 - confirm_password_len else 0;
+        const confirm_result_line = blk: {
+            var conf_result_buf: [256]u8 = undefined;
+            var conf_result_idx: usize = 0;
+            const prefix = "║  Confirm:  ";
+            @memcpy(conf_result_buf[conf_result_idx..][0..prefix.len], prefix);
+            conf_result_idx += prefix.len;
+            @memcpy(conf_result_buf[conf_result_idx..][0..confirm_password_len], confirm_password_buffer[0..confirm_password_len]);
+            conf_result_idx += confirm_password_len;
+            var i: usize = 0;
+            while (i < result_confirm_padding) : (i += 1) {
+                conf_result_buf[conf_result_idx] = ' ';
+                conf_result_idx += 1;
+            }
+            @memcpy(conf_result_buf[conf_result_idx..][0..3], "║");
+            conf_result_idx += 3;
+            break :blk conf_result_buf[0..conf_result_idx];
+        };
+        try writeCenteredLine(stdout, result_offset, confirm_result_line);
+
+        // Check if passwords match
+        try writeCenteredLine(stdout, result_offset, "║                                        ║");
+        const passwords_match = std.mem.eql(u8, password_buffer[0..password_len], confirm_password_buffer[0..confirm_password_len]);
+        if (passwords_match) {
+            try writeCenteredLine(stdout, result_offset, "║  Status: ✓ Passwords match            ║");
+        } else {
+            try writeCenteredLine(stdout, result_offset, "║  Status: ✗ Passwords don't match      ║");
+        }
+    }
+
+    try writeCenteredLine(stdout, result_offset, "║                                        ║");
+    try writeCenteredLine(stdout, result_offset, "╚════════════════════════════════════════╝");
     try stdout.flush();
 }
