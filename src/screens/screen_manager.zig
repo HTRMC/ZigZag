@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const TextFieldEditor = @import("../ui/text_field_editor.zig").TextFieldEditor;
 
 pub const ScreenManager = struct {
     current_screen: types.Screen,
@@ -112,39 +113,61 @@ pub const ScreenManager = struct {
         }
     }
 
-    fn handleLeftArrow(self: *ScreenManager) void {
+    const max_input_len = 25;
+
+    /// Returns a TextFieldEditor for the currently active text field, or null if
+    /// the current field is not editable (e.g., buttons like forgot_password, register).
+    fn getActiveFieldEditor(self: *ScreenManager) ?TextFieldEditor {
         if (self.current_screen == .login) {
-            if (self.login_field == .username and self.username_cursor > 0) {
-                self.username_cursor -= 1;
-            } else if (self.login_field == .password and self.password_cursor > 0) {
-                self.password_cursor -= 1;
-            }
+            return switch (self.login_field) {
+                .username => TextFieldEditor{
+                    .buffer = &self.username_buffer,
+                    .len = &self.username_len,
+                    .cursor = &self.username_cursor,
+                    .max_len = max_input_len,
+                },
+                .password => TextFieldEditor{
+                    .buffer = &self.password_buffer,
+                    .len = &self.password_len,
+                    .cursor = &self.password_cursor,
+                    .max_len = max_input_len,
+                },
+                .forgot_password, .register => null,
+            };
         } else {
-            if (self.register_field == .username and self.username_cursor > 0) {
-                self.username_cursor -= 1;
-            } else if (self.register_field == .password and self.password_cursor > 0) {
-                self.password_cursor -= 1;
-            } else if (self.register_field == .confirm_password and self.confirm_password_cursor > 0) {
-                self.confirm_password_cursor -= 1;
-            }
+            return switch (self.register_field) {
+                .username => TextFieldEditor{
+                    .buffer = &self.username_buffer,
+                    .len = &self.username_len,
+                    .cursor = &self.username_cursor,
+                    .max_len = max_input_len,
+                },
+                .password => TextFieldEditor{
+                    .buffer = &self.password_buffer,
+                    .len = &self.password_len,
+                    .cursor = &self.password_cursor,
+                    .max_len = max_input_len,
+                },
+                .confirm_password => TextFieldEditor{
+                    .buffer = &self.confirm_password_buffer,
+                    .len = &self.confirm_password_len,
+                    .cursor = &self.confirm_password_cursor,
+                    .max_len = max_input_len,
+                },
+                .create_account, .back_to_login => null,
+            };
+        }
+    }
+
+    fn handleLeftArrow(self: *ScreenManager) void {
+        if (self.getActiveFieldEditor()) |*editor| {
+            editor.moveCursorLeft();
         }
     }
 
     fn handleRightArrow(self: *ScreenManager) void {
-        if (self.current_screen == .login) {
-            if (self.login_field == .username and self.username_cursor < self.username_len) {
-                self.username_cursor += 1;
-            } else if (self.login_field == .password and self.password_cursor < self.password_len) {
-                self.password_cursor += 1;
-            }
-        } else {
-            if (self.register_field == .username and self.username_cursor < self.username_len) {
-                self.username_cursor += 1;
-            } else if (self.register_field == .password and self.password_cursor < self.password_len) {
-                self.password_cursor += 1;
-            } else if (self.register_field == .confirm_password and self.confirm_password_cursor < self.confirm_password_len) {
-                self.confirm_password_cursor += 1;
-            }
+        if (self.getActiveFieldEditor()) |*editor| {
+            editor.moveCursorRight();
         }
     }
 
@@ -185,94 +208,14 @@ pub const ScreenManager = struct {
     }
 
     fn handleBackspace(self: *ScreenManager) void {
-        if (self.current_screen == .login) {
-            if (self.login_field == .username and self.username_cursor > 0) {
-                var j: usize = self.username_cursor;
-                while (j < self.username_len) : (j += 1) {
-                    self.username_buffer[j - 1] = self.username_buffer[j];
-                }
-                self.username_len -= 1;
-                self.username_cursor -= 1;
-            } else if (self.login_field == .password and self.password_cursor > 0) {
-                var j: usize = self.password_cursor;
-                while (j < self.password_len) : (j += 1) {
-                    self.password_buffer[j - 1] = self.password_buffer[j];
-                }
-                self.password_len -= 1;
-                self.password_cursor -= 1;
-            }
-        } else {
-            if (self.register_field == .username and self.username_cursor > 0) {
-                var j: usize = self.username_cursor;
-                while (j < self.username_len) : (j += 1) {
-                    self.username_buffer[j - 1] = self.username_buffer[j];
-                }
-                self.username_len -= 1;
-                self.username_cursor -= 1;
-            } else if (self.register_field == .password and self.password_cursor > 0) {
-                var j: usize = self.password_cursor;
-                while (j < self.password_len) : (j += 1) {
-                    self.password_buffer[j - 1] = self.password_buffer[j];
-                }
-                self.password_len -= 1;
-                self.password_cursor -= 1;
-            } else if (self.register_field == .confirm_password and self.confirm_password_cursor > 0) {
-                var j: usize = self.confirm_password_cursor;
-                while (j < self.confirm_password_len) : (j += 1) {
-                    self.confirm_password_buffer[j - 1] = self.confirm_password_buffer[j];
-                }
-                self.confirm_password_len -= 1;
-                self.confirm_password_cursor -= 1;
-            }
+        if (self.getActiveFieldEditor()) |*editor| {
+            editor.delete();
         }
     }
 
     fn handlePrintableChar(self: *ScreenManager, byte: u8) void {
-        const max_input_len = 25;
-        if (self.current_screen == .login) {
-            if (self.login_field == .username and self.username_len < max_input_len) {
-                var j: usize = self.username_len;
-                while (j > self.username_cursor) : (j -= 1) {
-                    self.username_buffer[j] = self.username_buffer[j - 1];
-                }
-                self.username_buffer[self.username_cursor] = byte;
-                self.username_len += 1;
-                self.username_cursor += 1;
-            } else if (self.login_field == .password and self.password_len < max_input_len) {
-                var j: usize = self.password_len;
-                while (j > self.password_cursor) : (j -= 1) {
-                    self.password_buffer[j] = self.password_buffer[j - 1];
-                }
-                self.password_buffer[self.password_cursor] = byte;
-                self.password_len += 1;
-                self.password_cursor += 1;
-            }
-        } else {
-            if (self.register_field == .username and self.username_len < max_input_len) {
-                var j: usize = self.username_len;
-                while (j > self.username_cursor) : (j -= 1) {
-                    self.username_buffer[j] = self.username_buffer[j - 1];
-                }
-                self.username_buffer[self.username_cursor] = byte;
-                self.username_len += 1;
-                self.username_cursor += 1;
-            } else if (self.register_field == .password and self.password_len < max_input_len) {
-                var j: usize = self.password_len;
-                while (j > self.password_cursor) : (j -= 1) {
-                    self.password_buffer[j] = self.password_buffer[j - 1];
-                }
-                self.password_buffer[self.password_cursor] = byte;
-                self.password_len += 1;
-                self.password_cursor += 1;
-            } else if (self.register_field == .confirm_password and self.confirm_password_len < max_input_len) {
-                var j: usize = self.confirm_password_len;
-                while (j > self.confirm_password_cursor) : (j -= 1) {
-                    self.confirm_password_buffer[j] = self.confirm_password_buffer[j - 1];
-                }
-                self.confirm_password_buffer[self.confirm_password_cursor] = byte;
-                self.confirm_password_len += 1;
-                self.confirm_password_cursor += 1;
-            }
+        if (self.getActiveFieldEditor()) |*editor| {
+            editor.insert(byte);
         }
     }
 };
