@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const User = struct {
     username: []const u8,
-    password_hash: [64]u8, // SHA-256 hex string
+    password_hash: [128]u8, // Argon2id encoded hash
 
     pub fn deinit(self: *User, allocator: std.mem.Allocator) void {
         allocator.free(self.username);
@@ -46,11 +46,14 @@ pub const Database = struct {
             return error.UserAlreadyExists;
         }
 
-        // Hash the password
-        var hash: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(password, &hash, .{});
-
-        const hash_hex = std.fmt.bytesToHex(&hash, .lower);
+        // Hash the password using Argon2id (resistant to rainbow table attacks)
+        var hash_buf: [128]u8 = undefined;
+        const hash_str = std.crypto.pwhash.argon2.strHash(password, .{
+            .allocator = self.allocator,
+            .params = .{ .t = 3, .m = 65536, .p = 4 }, // OWASP recommended minimum
+        }, &hash_buf) catch return error.HashingFailed;
+        // Null-terminate after the hash string
+        @memset(hash_buf[hash_str.len..], 0);
 
         // Copy username for storage
         const username_copy = try self.allocator.dupe(u8, username);
@@ -58,7 +61,7 @@ pub const Database = struct {
 
         const user = User{
             .username = username_copy,
-            .password_hash = hash_hex,
+            .password_hash = hash_buf,
         };
 
         try self.users.put(username_copy, user);
@@ -68,13 +71,19 @@ pub const Database = struct {
     pub fn verifyUser(self: *Database, username: []const u8, password: []const u8) bool {
         const user = self.users.get(username) orelse return false;
 
-        // Hash the provided password
-        var hash: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(password, &hash, .{});
+        // Find end of hash string (null terminated in buffer)
+        var hash_len: usize = 0;
+        for (user.password_hash) |c| {
+            if (c == 0) break;
+            hash_len += 1;
+        }
 
-        const hash_hex = std.fmt.bytesToHex(&hash, .lower);
+        // Verify using Argon2id (constant-time comparison built-in)
+        std.crypto.pwhash.argon2.strVerify(user.password_hash[0..hash_len], password, .{
+            .allocator = self.allocator,
+        }) catch return false;
 
-        return std.mem.eql(u8, &user.password_hash, &hash_hex);
+        return true;
     }
 
     pub fn userExists(self: *Database, username: []const u8) bool {
@@ -98,7 +107,13 @@ pub const Database = struct {
         var iter = self.users.iterator();
         while (iter.next()) |entry| {
             const user = entry.value_ptr.*;
-            const user_str = std.fmt.bufPrint(content_buf[pos..], "{s}\n{s}\n", .{ user.username, &user.password_hash }) catch return error.BufferTooSmall;
+            // Find actual hash length (null-terminated)
+            var hash_len: usize = 0;
+            for (user.password_hash) |c| {
+                if (c == 0) break;
+                hash_len += 1;
+            }
+            const user_str = std.fmt.bufPrint(content_buf[pos..], "{s}\n{s}\n", .{ user.username, user.password_hash[0..hash_len] }) catch return error.BufferTooSmall;
             pos += user_str.len;
         }
 
@@ -139,17 +154,18 @@ pub const Database = struct {
             const hash_line = lines.next() orelse return;
             const hash_str = std.mem.trim(u8, hash_line, "\r");
 
-            if (hash_str.len != 64) continue;
+            if (hash_str.len == 0 or hash_str.len > 128) continue;
 
             const username_copy = try self.allocator.dupe(u8, username);
             errdefer self.allocator.free(username_copy);
 
-            var hash_hex: [64]u8 = undefined;
-            @memcpy(&hash_hex, hash_str[0..64]);
+            var hash_buf: [128]u8 = undefined;
+            @memcpy(hash_buf[0..hash_str.len], hash_str);
+            @memset(hash_buf[hash_str.len..], 0);
 
             const user = User{
                 .username = username_copy,
-                .password_hash = hash_hex,
+                .password_hash = hash_buf,
             };
 
             try self.users.put(username_copy, user);
