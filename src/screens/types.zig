@@ -1,6 +1,7 @@
 pub const Screen = enum {
     login,
     register,
+    chat,
 };
 
 pub const LoginField = enum {

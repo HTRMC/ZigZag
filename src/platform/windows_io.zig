@@ -64,6 +64,14 @@ extern "kernel32" fn ReadConsoleInputA(
     lpNumberOfEventsRead: *u32,
 ) callconv(WINAPI) BOOL;
 
+extern "kernel32" fn WaitForSingleObject(
+    hHandle: std.os.windows.HANDLE,
+    dwMilliseconds: u32,
+) callconv(WINAPI) u32;
+
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_TIMEOUT: u32 = 258;
+
 // Global state for cleanup in signal handler
 var g_original_input_mode: u32 = undefined;
 var g_original_output_cp: u32 = undefined;
@@ -93,6 +101,64 @@ fn ctrlHandler(dwCtrlType: u32) callconv(WINAPI) BOOL {
     }
 
     return 0; // Let default handler terminate the process
+}
+
+/// Result of readInputWithTimeout
+pub const InputResult = enum {
+    timeout, // No input within timeout period
+    resize, // Window was resized
+    input, // Got input byte
+};
+
+/// Read input with a timeout (Windows only feature, others block)
+/// Returns timeout if no input within timeout_ms milliseconds
+pub fn readInputWithTimeout(timeout_ms: u32) struct { result: InputResult, byte: u8 } {
+    const is_windows = @import("builtin").os.tag == .windows;
+
+    if (is_windows) {
+        const stdin_handle = std.fs.File.stdin().handle;
+
+        // Wait for input with timeout
+        const wait_result = WaitForSingleObject(stdin_handle, timeout_ms);
+
+        if (wait_result == WAIT_TIMEOUT) {
+            return .{ .result = .timeout, .byte = 0 };
+        }
+
+        if (wait_result != WAIT_OBJECT_0) {
+            return .{ .result = .timeout, .byte = 0 };
+        }
+
+        // Input is available, read it
+        var input_rec: INPUT_RECORD = undefined;
+        var events_read: u32 = 0;
+
+        while (true) {
+            if (ReadConsoleInputA(stdin_handle, @ptrCast(&input_rec), 1, &events_read) == 0) {
+                return .{ .result = .timeout, .byte = 0 };
+            }
+
+            if (events_read == 0) continue;
+
+            if (input_rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+                return .{ .result = .resize, .byte = 0 };
+            } else if (input_rec.EventType == KEY_EVENT) {
+                const key_event = input_rec.Event.KeyEvent;
+                if (key_event.bKeyDown != 0) {
+                    return .{ .result = .input, .byte = key_event.uChar.AsciiChar };
+                }
+            }
+            // For other events, check if more input is available
+            var peek_rec: INPUT_RECORD = undefined;
+            var peek_count: u32 = 0;
+            if (PeekConsoleInputA(stdin_handle, @ptrCast(&peek_rec), 1, &peek_count) == 0 or peek_count == 0) {
+                return .{ .result = .timeout, .byte = 0 };
+            }
+        }
+    } else {
+        // Non-Windows: no timeout support, just return timeout
+        return .{ .result = .timeout, .byte = 0 };
+    }
 }
 
 // Read input and handle window resize events

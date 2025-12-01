@@ -19,3 +19,8 @@ pub fn writeCenteredLine(writer: anytype, offset: CenterOffset, line: []const u8
     try writer.writeAll(line);
     try writer.writeAll("\n");
 }
+
+pub fn writeCenteredLineWidth(writer: anytype, offset: CenterOffset, line: []const u8, width: u16) !void {
+    _ = width; // Width is informational for now
+    try writeCenteredLine(writer, offset, line);
+}
