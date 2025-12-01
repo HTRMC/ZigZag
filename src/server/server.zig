@@ -91,8 +91,13 @@ pub const Server = struct {
 
         while (true) {
             const line = reader.interface.takeDelimiterExclusive('\n') catch |err| {
-                if (err == error.EndOfStream) {
-                    std.debug.print("Client disconnected\n", .{});
+                // EndOfStream = graceful close, ReadFailed = connection dropped
+                if (err == error.EndOfStream or err == error.ReadFailed) {
+                    if (client.username) |name| {
+                        std.debug.print("Client disconnected: {s}\n", .{name});
+                    } else {
+                        std.debug.print("Client disconnected\n", .{});
+                    }
                 } else {
                     std.debug.print("Read error: {}\n", .{err});
                 }
@@ -171,11 +176,8 @@ pub const Server = struct {
             const broadcast_msg = try std.fmt.bufPrint(&msg_buf, "MSG {s} {s}\n", .{ client.username.?, rest });
             try self.broadcast(broadcast_msg, client); // Exclude sender (they already see their own message)
         } else if (std.mem.eql(u8, command, "QUIT")) {
-            if (client.authenticated and client.username != null) {
-                var notify_buf: [256]u8 = undefined;
-                const notify_msg = try std.fmt.bufPrint(&notify_buf, "SYSTEM {s} left the chat\n", .{client.username.?});
-                try self.broadcast(notify_msg, client);
-            }
+            // Just break - removeClient will handle the "left the chat" notification
+            return;
         } else if (std.mem.eql(u8, command, "USERS")) {
             if (!client.authenticated) {
                 try self.sendToClient(client, "ERROR Not logged in\n");
@@ -230,6 +232,16 @@ pub const Server = struct {
 
     fn removeClient(self: *Server, client: *Client) void {
         const io = self.threaded.io();
+
+        // Notify others that user left (if they were logged in)
+        if (client.authenticated) {
+            if (client.username) |name| {
+                var notify_buf: [256]u8 = undefined;
+                const notify_msg = std.fmt.bufPrint(&notify_buf, "SYSTEM {s} left the chat\n", .{name}) catch return;
+                self.broadcast(notify_msg, client) catch {};
+            }
+        }
+
         for (self.clients.items, 0..) |c, i| {
             if (c == client) {
                 _ = self.clients.swapRemove(i);
